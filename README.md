@@ -9,6 +9,7 @@ A comprehensive hotel management web application built with React.js frontend an
 - Complete API endpoints for all features
 - Database auto-initialization
 - Role-based access control
+- **MVC Architecture with Model classes**
 
 **Frontend**: ✅ Complete with modern React UI
 - Login page with demo credentials
@@ -42,6 +43,7 @@ A comprehensive hotel management web application built with React.js frontend an
 
 ### Backend
 - Node.js with Express.js
+- **MVC Architecture with Model-View-Controller pattern**
 - SQLite database (no external database required)
 - JWT authentication
 - bcrypt for password hashing
@@ -175,6 +177,7 @@ The application automatically creates the following tables:
 
 ### ✅ Completed Features
 - Complete backend API with all endpoints
+- **MVC Architecture with dedicated Model classes**
 - SQLite database with auto-initialization
 - JWT authentication and role-based access
 - React frontend with modern UI

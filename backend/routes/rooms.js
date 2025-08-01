@@ -1,5 +1,5 @@
 const express = require('express');
-const db = require('../config/database');
+const { Room } = require('../models');
 const { authenticateToken, authorizeRoles } = require('../middleware/auth');
 const { validateRoom } = require('../middleware/validation');
 
@@ -10,36 +10,21 @@ router.get('/', authenticateToken, async (req, res) => {
   try {
     const { status, room_type, available_from, available_to } = req.query;
     
-    let query = 'SELECT * FROM rooms WHERE 1=1';
-    const params = [];
-
-    if (status) {
-      query += ' AND status = ?';
-      params.push(status);
+    // Use model's filtering if simple filters
+    if (!available_from || !available_to) {
+      const filters = {};
+      if (status) filters.status = status;
+      if (room_type) filters.room_type = room_type;
+      
+      const rooms = await Room.findAll(filters, { 
+        orderBy: 'room_number', 
+        orderDirection: 'ASC' 
+      });
+      return res.json(rooms);
     }
 
-    if (room_type) {
-      query += ' AND room_type = ?';
-      params.push(room_type);
-    }
-
-    // Check availability for specific date range
-    if (available_from && available_to) {
-      query += ` AND id NOT IN (
-        SELECT room_id FROM bookings 
-        WHERE booking_status IN ('confirmed', 'checked_in') 
-        AND (
-          (check_in_date <= ? AND check_out_date > ?) OR
-          (check_in_date < ? AND check_out_date >= ?) OR
-          (check_in_date >= ? AND check_out_date <= ?)
-        )
-      )`;
-      params.push(available_to, available_from, available_to, available_to, available_from, available_to);
-    }
-
-    query += ' ORDER BY room_number';
-
-    const [rooms] = await db.execute(query, params);
+    // Use model's availability check for date range
+    const rooms = await Room.getAvailableRooms(available_from, available_to);
     res.json(rooms);
   } catch (error) {
     console.error('Get rooms error:', error);
@@ -50,16 +35,13 @@ router.get('/', authenticateToken, async (req, res) => {
 // Get single room
 router.get('/:id', authenticateToken, async (req, res) => {
   try {
-    const [rooms] = await db.execute(
-      'SELECT * FROM rooms WHERE id = ?',
-      [req.params.id]
-    );
+    const room = await Room.findById(req.params.id);
 
-    if (rooms.length === 0) {
+    if (!room) {
       return res.status(404).json({ message: 'Room not found' });
     }
 
-    res.json(rooms[0]);
+    res.json(room);
   } catch (error) {
     console.error('Get room error:', error);
     res.status(500).json({ message: 'Internal server error' });
@@ -72,23 +54,23 @@ router.post('/', authenticateToken, authorizeRoles('admin', 'manager'), validate
     const { room_number, room_type, price_per_night, capacity, amenities, description } = req.body;
 
     // Check if room number already exists
-    const [existingRooms] = await db.execute(
-      'SELECT id FROM rooms WHERE room_number = ?',
-      [room_number]
-    );
-
-    if (existingRooms.length > 0) {
+    const exists = await Room.roomNumberExists(room_number);
+    if (exists) {
       return res.status(400).json({ message: 'Room number already exists' });
     }
 
-    const [result] = await db.execute(
-      'INSERT INTO rooms (room_number, room_type, price_per_night, capacity, amenities, description) VALUES (?, ?, ?, ?, ?, ?)',
-      [room_number, room_type, price_per_night, capacity, amenities, description]
-    );
+    const room = await Room.create({
+      room_number,
+      room_type,
+      price_per_night,
+      capacity,
+      amenities,
+      description
+    });
 
     res.status(201).json({
       message: 'Room created successfully',
-      roomId: result.insertId
+      room
     });
   } catch (error) {
     console.error('Create room error:', error);
@@ -102,31 +84,31 @@ router.put('/:id', authenticateToken, authorizeRoles('admin', 'manager'), valida
     const { room_number, room_type, price_per_night, capacity, amenities, status, description } = req.body;
 
     // Check if room exists
-    const [existingRooms] = await db.execute(
-      'SELECT id FROM rooms WHERE id = ?',
-      [req.params.id]
-    );
-
-    if (existingRooms.length === 0) {
+    const existingRoom = await Room.findById(req.params.id);
+    if (!existingRoom) {
       return res.status(404).json({ message: 'Room not found' });
     }
 
     // Check if room number is being changed and if it conflicts
-    const [conflictRooms] = await db.execute(
-      'SELECT id FROM rooms WHERE room_number = ? AND id != ?',
-      [room_number, req.params.id]
-    );
-
-    if (conflictRooms.length > 0) {
+    const conflicts = await Room.roomNumberExists(room_number, req.params.id);
+    if (conflicts) {
       return res.status(400).json({ message: 'Room number already exists' });
     }
 
-    await db.execute(
-      'UPDATE rooms SET room_number = ?, room_type = ?, price_per_night = ?, capacity = ?, amenities = ?, status = ?, description = ? WHERE id = ?',
-      [room_number, room_type, price_per_night, capacity, amenities, status, description, req.params.id]
-    );
+    const updatedRoom = await Room.update(req.params.id, {
+      room_number,
+      room_type,
+      price_per_night,
+      capacity,
+      amenities,
+      status,
+      description
+    });
 
-    res.json({ message: 'Room updated successfully' });
+    res.json({ 
+      message: 'Room updated successfully',
+      room: updatedRoom
+    });
   } catch (error) {
     console.error('Update room error:', error);
     res.status(500).json({ message: 'Internal server error' });
@@ -136,24 +118,18 @@ router.put('/:id', authenticateToken, authorizeRoles('admin', 'manager'), valida
 // Delete room
 router.delete('/:id', authenticateToken, authorizeRoles('admin'), async (req, res) => {
   try {
-    // Check if room has active bookings
-    const [activeBookings] = await db.execute(
-      'SELECT id FROM bookings WHERE room_id = ? AND booking_status IN ("confirmed", "checked_in")',
-      [req.params.id]
-    );
-
-    if (activeBookings.length > 0) {
+    // Check if room has booking conflicts
+    const hasConflicts = await Room.hasBookingConflict(req.params.id, new Date(), new Date(Date.now() + 365 * 24 * 60 * 60 * 1000));
+    
+    if (hasConflicts) {
       return res.status(400).json({ 
         message: 'Cannot delete room with active bookings' 
       });
     }
 
-    const [result] = await db.execute(
-      'DELETE FROM rooms WHERE id = ?',
-      [req.params.id]
-    );
-
-    if (result.affectedRows === 0) {
+    const deleted = await Room.delete(req.params.id);
+    
+    if (!deleted) {
       return res.status(404).json({ message: 'Room not found' });
     }
 
@@ -173,14 +149,26 @@ router.patch('/:id/status', authenticateToken, async (req, res) => {
       return res.status(400).json({ message: 'Invalid status' });
     }
 
-    await db.execute(
-      'UPDATE rooms SET status = ? WHERE id = ?',
-      [status, req.params.id]
-    );
+    const updated = await Room.updateStatus(req.params.id, status);
+    
+    if (!updated) {
+      return res.status(404).json({ message: 'Room not found' });
+    }
 
     res.json({ message: 'Room status updated successfully' });
   } catch (error) {
     console.error('Update room status error:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+// Get room statistics
+router.get('/stats/overview', authenticateToken, async (req, res) => {
+  try {
+    const stats = await Room.getStats();
+    res.json(stats);
+  } catch (error) {
+    console.error('Room stats error:', error);
     res.status(500).json({ message: 'Internal server error' });
   }
 });

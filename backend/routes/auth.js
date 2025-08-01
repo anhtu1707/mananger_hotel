@@ -1,7 +1,6 @@
 const express = require('express');
-const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const db = require('../config/database');
+const { Staff } = require('../models');
 const { validateLogin } = require('../middleware/validation');
 const { authenticateToken } = require('../middleware/auth');
 
@@ -13,19 +12,14 @@ router.post('/login', validateLogin, async (req, res) => {
     const { email, password } = req.body;
 
     // Find user by email
-    const [users] = await db.execute(
-      'SELECT * FROM staff WHERE email = ? AND status = "active"',
-      [email]
-    );
-
-    if (users.length === 0) {
+    const user = await Staff.findByEmail(email);
+    
+    if (!user) {
       return res.status(401).json({ message: 'Invalid credentials' });
     }
 
-    const user = users[0];
-
     // Check password
-    const isValidPassword = await bcrypt.compare(password, user.password);
+    const isValidPassword = await Staff.verifyPassword(password, user.password);
     if (!isValidPassword) {
       return res.status(401).json({ message: 'Invalid credentials' });
     }
@@ -54,16 +48,13 @@ router.post('/login', validateLogin, async (req, res) => {
 // Get current user profile
 router.get('/profile', authenticateToken, async (req, res) => {
   try {
-    const [users] = await db.execute(
-      'SELECT id, name, email, role, phone, address, hire_date, status, created_at FROM staff WHERE id = ?',
-      [req.user.id]
-    );
+    const user = await Staff.findByIdSafe(req.user.id);
 
-    if (users.length === 0) {
+    if (!user) {
       return res.status(404).json({ message: 'User not found' });
     }
 
-    res.json(users[0]);
+    res.json(user);
   } catch (error) {
     console.error('Profile error:', error);
     res.status(500).json({ message: 'Internal server error' });
@@ -75,10 +66,7 @@ router.put('/profile', authenticateToken, async (req, res) => {
   try {
     const { name, phone, address } = req.body;
     
-    await db.execute(
-      'UPDATE staff SET name = ?, phone = ?, address = ? WHERE id = ?',
-      [name, phone, address, req.user.id]
-    );
+    await Staff.updateStaff(req.user.id, { name, phone, address });
 
     res.json({ message: 'Profile updated successfully' });
   } catch (error) {
@@ -97,29 +85,20 @@ router.put('/change-password', authenticateToken, async (req, res) => {
     }
 
     // Get current user with password
-    const [users] = await db.execute(
-      'SELECT password FROM staff WHERE id = ?',
-      [req.user.id]
-    );
+    const user = await Staff.findById(req.user.id);
 
-    if (users.length === 0) {
+    if (!user) {
       return res.status(404).json({ message: 'User not found' });
     }
 
     // Verify current password
-    const isValidPassword = await bcrypt.compare(currentPassword, users[0].password);
+    const isValidPassword = await Staff.verifyPassword(currentPassword, user.password);
     if (!isValidPassword) {
       return res.status(400).json({ message: 'Current password is incorrect' });
     }
 
-    // Hash new password
-    const hashedNewPassword = await bcrypt.hash(newPassword, 10);
-
     // Update password
-    await db.execute(
-      'UPDATE staff SET password = ? WHERE id = ?',
-      [hashedNewPassword, req.user.id]
-    );
+    await Staff.updatePassword(req.user.id, newPassword);
 
     res.json({ message: 'Password changed successfully' });
   } catch (error) {
