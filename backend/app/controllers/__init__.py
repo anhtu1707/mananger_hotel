@@ -1,0 +1,9 @@
+from .auth_controller import router as auth_router
+from .user_controller import router as user_router
+from .menu_controller import router as menu_router
+from .employee_controller import router as employee_router
+from .table_controller import router as table_router
+from .inventory_controller import router as inventory_router
+from .order_controller import router as order_router
+from .bill_controller import router as bill_router
+from .report_controller import router as report_router
